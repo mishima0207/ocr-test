@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>ID照合アプリ</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src='https://unpkg.com/tesseract.js@v4.0.1/dist/tesseract.min.js'></script>
+    <style>
+        body { position: fixed; width: 100%; height: 100%; overflow: hidden; }
+        #video-container { position: relative; width: 100%; height: 60vh; background: #000; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .scan-guide {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 85%; height: 60px;
+            border: 2px solid #3b82f6;
+            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.6);
+            z-index: 10;
+        }
+        .scan-guide::after {
+            content: "10桁の数字を枠内に";
+            position: absolute; top: -25px; left: 0; width: 100%;
+            text-align: center; font-size: 12px; color: #3b82f6; font-weight: bold;
+        }
+        #loading {
+            display: none; position: absolute; inset: 0;
+            background: rgba(0,0,0,0.5); z-index: 20;
+            align-items: center; justify-content: center; color: white;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 font-sans">
+
+    <div id="status-bar" class="p-6 text-center text-xl font-black bg-gray-800 text-white transition-all duration-300">
+        システム起動中...
+    </div>
+
+    <div id="video-container">
+        <video id="video" autoplay playsinline></video>
+        <div class="scan-guide"></div>
+        <div id="loading">
+            <div class="animate-spin h-8 w-8 border-4 border-blue-500 border-t-transparent rounded-full"></div>
+        </div>
+        <canvas id="capture-canvas" style="display:none;"></canvas>
+    </div>
+
+    <div class="p-4 flex flex-col items-center bg-white shadow-lg">
+        <button id="shutter-btn" onclick="captureAndOCR()" class="w-full py-5 bg-blue-600 text-white rounded-2xl text-2xl font-bold active:scale-95 transition-transform shadow-xl">
+            スキャン（読み取り）
+        </button>
+        <button onclick="resetApp()" class="mt-4 text-gray-400 text-sm underline">システムリセット</button>
+    </div>
+
+    <div class="p-4 grid grid-cols-2 gap-4 max-w-md mx-auto">
+        <div class="bg-white p-3 rounded-xl shadow border-b-4 border-blue-500">
+            <p class="text-[10px] text-gray-400 font-bold">正解(Target)</p>
+            <p id="target-id" class="text-xl font-mono text-gray-700">----------</p>
+        </div>
+        <div class="bg-white p-3 rounded-xl shadow border-b-4 border-yellow-500">
+            <p class="text-[10px] text-gray-400 font-bold">今回(Scan)</p>
+            <p id="current-id" class="text-xl font-mono text-gray-700">----------</p>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('capture-canvas');
+        const statusBar = document.getElementById('status-bar');
+        const targetDisplay = document.getElementById('target-id');
+        const currentDisplay = document.getElementById('current-id');
+        const loading = document.getElementById('loading');
+        const shutterBtn = document.getElementById('shutter-btn');
+
+        let targetID = null;
+        let worker = null;
+
+        async function init() {
+            try {
+                // OCR初期化
+                worker = await Tesseract.createWorker();
+                await worker.loadLanguage('eng');
+                await worker.initialize('eng');
+                await worker.setParameters({
+                    tessedit_char_whitelist: '0123456789',
+                    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_LINE,
+                });
+
+                // カメラ設定（背面カメラを優先）
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { 
+                        facingMode: "environment",
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    }
+                });
+                video.srcObject = stream;
+                statusBar.innerText = "1枚目をスキャンしてください";
+            } catch (err) {
+                statusBar.innerText = "カメラ起動エラー";
+                alert("カメラの許可が必要です: " + err);
+            }
+        }
+
+        async function captureAndOCR() {
+            if (!worker) return;
+            loading.style.display = 'flex';
+            shutterBtn.disabled = true;
+
+            const ctx = canvas.getContext('2d');
+            const vW = video.videoWidth;
+            const vH = video.videoHeight;
+
+            // 枠の部分を計算
+            const cropW = vW * 0.8;
+            const cropH = (60 / video.clientHeight) * vH;
+            const cropX = (vW - cropW) / 2;
+            const cropY = (vH - cropH) / 2;
+
+            // 精度向上のため拡大して描画
+            const zoom = 2;
+            canvas.width = cropW * zoom;
+            canvas.height = cropH * zoom;
+
+            // スマホ向け画像調整
+            ctx.filter = 'grayscale(1) contrast(2) brightness(1.1)';
+            ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, canvas.width, canvas.height);
+
+            try {
+                const { data: { text } } = await worker.recognize(canvas);
+                const digits = text.replace(/[^0-9]/g, '');
+                
+                // 10桁の数字を抽出
+                const match = digits.match(/\d{10}/);
+
+                if (match) {
+                    processResult(match[0]);
+                } else {
+                    navigator.vibrate?.(100); // 失敗時に短く振動
+                    alert("10桁の数字が読み取れませんでした。もう少し離して、数字を枠の中央に入れてください。");
+                }
+            } catch (e) {
+                console.error(e);
+            }
+
+            loading.style.display = 'none';
+            shutterBtn.disabled = false;
+        }
+
+        function processResult(id) {
+            currentDisplay.innerText = id;
+            if (!targetID) {
+                targetID = id;
+                targetDisplay.innerText = id;
+                statusBar.innerText = "正解を登録しました";
+                statusBar.className = "p-6 text-center text-xl font-black bg-blue-600 text-white";
+                navigator.vibrate?.([100, 50, 100]); // 登録成功の振動
+                playTone(440, 0.2);
+            } else {
+                if (id === targetID) {
+                    statusBar.innerText = "一致 (OK)";
+                    statusBar.className = "p-6 text-center text-xl font-black bg-green-600 text-white";
+                    navigator.vibrate?.(200);
+                    playTone(880, 0.1); playTone(1046, 0.1);
+                } else {
+                    statusBar.innerText = "不一致 (NG)";
+                    statusBar.className = "p-6 text-center text-xl font-black bg-red-600 text-white";
+                    navigator.vibrate?.([500, 100, 500]); // 警告の長い振動
+                    playTone(220, 0.5);
+                }
+            }
+        }
+
+        function resetApp() {
+            targetID = null;
+            targetDisplay.innerText = "----------";
+            currentDisplay.innerText = "----------";
+            statusBar.innerText = "1枚目をスキャン";
+            statusBar.className = "p-6 text-center text-xl font-black bg-gray-800 text-white";
+        }
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playTone(freq, duration) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            osc.start(); osc.stop(audioCtx.currentTime + duration);
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>
