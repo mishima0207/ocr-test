@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>高精度ID照合システム</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html { position: fixed; width: 100%; height: 100%; margin: 0; display: flex; flex-direction: column; background-color: #000; overflow: hidden; }
+        #status-bar { z-index: 100; flex-shrink: 0; }
+        #video-container { position: relative; flex-grow: 1; width: 100%; overflow: hidden; background: #000; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .scan-guide {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%; height: 60px;
+            border: 2px solid #3b82f6;
+            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5);
+            z-index: 10;
+        }
+        .controls { z-index: 100; background-color: white; padding: 1.5rem; flex-shrink: 0; display: flex; flex-direction: column; gap: 1rem; }
+        #loading-overlay {
+            display: none; position: absolute; inset: 0;
+            background: rgba(0,0,0,0.7); z-index: 200;
+            align-items: center; justify-content: center; color: white; flex-direction: column;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="status-bar" class="p-4 text-center text-lg font-black bg-gray-800 text-white">
+        1枚目をスキャン（正解登録）
+    </div>
+
+    <div id="video-container">
+        <video id="video" autoplay playsinline></video>
+        <div class="scan-guide"></div>
+        <div id="loading-overlay">
+            <div class="animate-spin h-10 w-10 border-4 border-blue-500 border-t-transparent rounded-full mb-2"></div>
+            <p id="loading-text">Google AIが解析中...</p>
+        </div>
+        <canvas id="capture-canvas" style="display:none;"></canvas>
+    </div>
+
+    <div class="controls">
+        <div class="grid grid-cols-2 gap-4 mb-2">
+            <div class="bg-gray-100 p-2 rounded border-l-4 border-blue-500">
+                <p class="text-[10px] text-gray-500 font-bold uppercase">正解 (Target)</p>
+                <p id="target-id" class="text-lg font-mono text-gray-800">----------</p>
+            </div>
+            <div class="bg-gray-100 p-2 rounded border-l-4 border-yellow-500">
+                <p class="text-[10px] text-gray-500 font-bold uppercase">今回 (Scan)</p>
+                <p id="current-id" class="text-lg font-mono text-gray-800">----------</p>
+            </div>
+        </div>
+
+        <button id="shutter-btn" onclick="sendToGAS()" class="w-full py-4 bg-blue-600 text-white rounded-xl text-xl font-bold active:bg-blue-800 shadow-lg transition-all">
+            スキャン実行
+        </button>
+        
+        <button onclick="resetApp()" class="text-gray-400 text-xs underline">リセット</button>
+    </div>
+
+    <script>
+        // ★★★ ここにメモしたGASのURLを貼り付けてください ★★★
+        const GAS_URL = "https://script.google.com/macros/s/AKfycbxQCTxmn41UR3GhNLi7xqYmR6cNX-X1KaNNrcuhHX98wvrvkfe_Rn36yvv4r82cHgjz/exec";
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('capture-canvas');
+        const statusBar = document.getElementById('status-bar');
+        const targetDisplay = document.getElementById('target-id');
+        const currentDisplay = document.getElementById('current-id');
+        const loading = document.getElementById('loading-overlay');
+        const shutterBtn = document.getElementById('shutter-btn');
+
+        let targetID = null;
+
+        // カメラ起動
+        async function initCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 } }
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                alert("カメラを起動できません: " + err.message);
+            }
+        }
+
+        // 画像をキャプチャしてGASへ送信
+        async function sendToGAS() {
+            if (!GAS_URL.startsWith("https")) {
+                alert("GASのURLが正しく設定されていません。");
+                return;
+            }
+
+            loading.style.display = 'flex';
+            shutterBtn.disabled = true;
+
+            const ctx = canvas.getContext('2d');
+            // 高画質でキャプチャするために元の解像度を使用
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0);
+
+            // Base64に変換（JPEG形式で品質を少し落として通信量を削減）
+            const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+
+            const payload = {
+                image: base64Image,
+                targetID: targetID || ""
+            };
+
+            try {
+                const response = await fetch(GAS_URL, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    alert("サーバーエラー: " + data.error);
+                } else {
+                    handleResult(data.scannedID, data.status);
+                }
+            } catch (err) {
+                alert("通信エラー: " + err.message);
+            } finally {
+                loading.style.display = 'none';
+                shutterBtn.disabled = false;
+            }
+        }
+
+        function handleResult(id, status) {
+            currentDisplay.innerText = id;
+
+            if (!targetID && id !== "検出不可") {
+                targetID = id;
+                targetDisplay.innerText = id;
+                statusBar.innerText = "正解を登録完了";
+                statusBar.className = "p-4 text-center text-lg font-black bg-blue-600 text-white";
+                playTone(440, 0.2);
+            } else {
+                if (status === "一致") {
+                    statusBar.innerText = "一致 (OK)";
+                    statusBar.className = "p-4 text-center text-lg font-black bg-green-600 text-white";
+                    playTone(880, 0.1); playTone(1046, 0.1);
+                } else if (status === "不一致") {
+                    statusBar.innerText = "不一致 (NG)";
+                    statusBar.className = "p-4 text-center text-lg font-black bg-red-600 text-white";
+                    playTone(220, 0.5);
+                } else {
+                    statusBar.innerText = "10桁の数字が見つかりません";
+                    statusBar.className = "p-4 text-center text-lg font-black bg-yellow-600 text-white";
+                }
+            }
+        }
+
+        function resetApp() {
+            targetID = null;
+            targetDisplay.innerText = "----------";
+            currentDisplay.innerText = "----------";
+            statusBar.innerText = "1枚目をスキャン（正解登録）";
+            statusBar.className = "p-4 text-center text-lg font-black bg-gray-800 text-white";
+        }
+
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        function playTone(freq, duration) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.connect(gain); gain.connect(audioCtx.destination);
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            osc.start(); osc.stop(audioCtx.currentTime + duration);
+        }
+
+        window.onload = initCamera;
+    </script>
+</body>
+</html>
