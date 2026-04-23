@@ -3,12 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>全自動ID照合（サイレント）</title>
+    <title>全自動ID照合</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body, html { position: fixed; width: 100%; height: 100%; margin: 0; display: flex; flex-direction: column; background-color: #000; overflow: hidden; }
         #status-bar { z-index: 100; flex-shrink: 0; }
-        #video-container { position: relative; flex-grow: 1; width: 100%; overflow: hidden; }
+        #video-container { position: relative; flex-grow: 1; width: 100%; overflow: hidden; background: #000; }
         video { width: 100%; height: 100%; object-fit: cover; }
         .scan-guide {
             position: absolute; top: 50%; left: 50%;
@@ -18,36 +18,35 @@
             box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5);
             z-index: 10;
         }
-        .controls { z-index: 100; background-color: white; padding: 1rem; flex-shrink: 0; text-align: center; }
-        
-        /* 判定結果・待機用オーバーレイ */
         #wait-overlay {
             display: none; position: absolute; inset: 0;
             z-index: 50; align-items: center; justify-content: center; color: white; text-align: center;
         }
         .msg-box { padding: 30px 60px; border-radius: 20px; font-weight: 900; font-size: 48px; border: 4px solid white; }
+        /* 解析中を示す小さなランプ */
+        #scan-dot {
+            position: absolute; top: 10px; right: 10px; width: 15px; height: 15px;
+            background: #666; border-radius: 50%; z-index: 100;
+        }
+        .scanning { background: #ff0000 !important; box-shadow: 0 0 10px #ff0000; }
     </style>
 </head>
 <body>
 
-    <div id="status-bar" class="p-4 text-center text-xl font-black bg-gray-800 text-white transition-all">
-        1枚目をスキャン（正解登録）
+    <div id="status-bar" class="p-4 text-center text-xl font-black bg-gray-800 text-white">
+        システム起動中...
     </div>
 
     <div id="video-container">
+        <div id="scan-dot"></div> <!-- 解析中に赤く光るランプ -->
         <video id="video" autoplay playsinline></video>
-        
-        <!-- 結果表示オーバーレイ -->
-        <div id="wait-overlay">
-            <div id="msg-card" class="msg-box"></div>
-        </div>
-
+        <div id="wait-overlay"><div id="msg-card" class="msg-box"></div></div>
         <div class="scan-guide"></div>
         <canvas id="capture-canvas" style="display:none;"></canvas>
     </div>
 
-    <div class="controls">
-        <div class="flex justify-around mb-2">
+    <div class="p-4 bg-white flex flex-col items-center">
+        <div class="flex justify-around w-full mb-2">
             <div class="text-left">
                 <p class="text-[10px] text-gray-400 font-bold uppercase">正解 ID</p>
                 <p id="target-id" class="text-2xl font-mono text-blue-600">----------</p>
@@ -57,10 +56,11 @@
                 <p id="current-id" class="text-2xl font-mono text-gray-800">----------</p>
             </div>
         </div>
-        <button onclick="resetApp()" class="mt-2 text-gray-500 text-sm font-bold border border-gray-300 px-4 py-1 rounded-full">正解IDをリセット</button>
+        <button onclick="resetApp()" class="text-gray-500 text-sm font-bold border border-gray-300 px-6 py-2 rounded-full active:bg-gray-100">リセット</button>
     </div>
 
     <script>
+        // ★★★ 【重要】ここにGASのURLを貼り付けてください ★★★
         const GAS_URL = "https://script.google.com/macros/s/AKfycbxQCTxmn41UR3GhNLi7xqYmR6cNX-X1KaNNrcuhHX98wvrvkfe_Rn36yvv4r82cHgjz/exec";
 
         const video = document.getElementById('video');
@@ -70,26 +70,40 @@
         const currentDisplay = document.getElementById('current-id');
         const waitOverlay = document.getElementById('wait-overlay');
         const msgCard = document.getElementById('msg-card');
+        const scanDot = document.getElementById('scan-dot');
 
         let targetID = null;
         let isWaiting = false;
 
         async function initCamera() {
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: "environment", width: { ideal: 1280 } }
-            });
-            video.srcObject = stream;
-            setTimeout(autoScanLoop, 3000);
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment", width: { ideal: 1280 } }
+                });
+                video.srcObject = stream;
+                statusBar.innerText = "1枚目をスキャンしてください";
+                // 3秒後に自動ループ開始
+                setTimeout(autoScanLoop, 3000);
+            } catch (err) {
+                statusBar.innerText = "カメラ起動失敗";
+                alert("カメラの許可を確認してください");
+            }
         }
 
         async function autoScanLoop() {
             if (!isWaiting) {
                 await performScan();
             }
+            // 次の解析までの間隔（1.5秒）
             setTimeout(autoScanLoop, 1500);
         }
 
         async function performScan() {
+            if (!GAS_URL.startsWith("https")) return;
+
+            // 解析開始の合図（右上のランプを赤くする）
+            scanDot.classList.add('scanning');
+
             const ctx = canvas.getContext('2d');
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -110,25 +124,25 @@
                 }
             } catch (err) {
                 console.error("通信エラー:", err);
+            } finally {
+                // 解析終了の合図（ランプを消す）
+                scanDot.classList.remove('scanning');
             }
         }
 
         async function triggerWait(status) {
             isWaiting = true;
-            
             if (status === "初回登録") {
                 msgCard.innerText = "登録完了";
-                waitOverlay.style.backgroundColor = "rgba(37, 99, 235, 0.9)"; // 青
+                waitOverlay.style.backgroundColor = "rgba(37, 99, 235, 0.9)";
             } else if (status === "一致") {
                 msgCard.innerText = "OK";
-                waitOverlay.style.backgroundColor = "rgba(22, 163, 74, 0.9)"; // 緑
+                waitOverlay.style.backgroundColor = "rgba(22, 163, 74, 0.9)";
             } else {
                 msgCard.innerText = "NG";
-                waitOverlay.style.backgroundColor = "rgba(220, 38, 38, 0.9)"; // 赤
+                waitOverlay.style.backgroundColor = "rgba(220, 38, 38, 0.9)";
             }
-
             waitOverlay.style.display = 'flex';
-            // 入れ替え待ち時間（3秒）
             await new Promise(r => setTimeout(r, 3000));
             waitOverlay.style.display = 'none';
             isWaiting = false;
@@ -136,7 +150,6 @@
 
         function handleResult(id, status) {
             currentDisplay.innerText = id;
-
             if (!targetID) {
                 targetID = id;
                 targetDisplay.innerText = id;
@@ -157,8 +170,10 @@
             targetID = null;
             targetDisplay.innerText = "----------";
             currentDisplay.innerText = "----------";
-            statusBar.innerText = "1枚目をスキャン（正解登録）";
+            statusBar.innerText = "1枚目をスキャン";
             statusBar.className = "p-4 text-center text-xl font-black bg-gray-800 text-white";
+            waitOverlay.style.display = 'none';
+            isWaiting = false;
         }
 
         window.onload = initCamera;
