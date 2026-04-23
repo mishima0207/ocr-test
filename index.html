@@ -3,30 +3,25 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ID照合システム（手動スキャン）</title>
+    <title>ID照合（確実ボタン式）</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body, html { position: fixed; width: 100%; height: 100%; margin: 0; display: flex; flex-direction: column; background-color: #000; overflow: hidden; }
-        #status-bar { z-index: 100; flex-shrink: 0; }
-        #video-container { position: relative; flex-grow: 1; width: 100%; overflow: hidden; background: #000; }
+        #status-bar { z-index: 100; }
+        #video-container { position: relative; flex-grow: 1; width: 100%; overflow: hidden; }
         video { width: 100%; height: 100%; object-fit: cover; }
-        
         .scan-guide {
             position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%);
-            width: 85%; height: 100px;
+            width: 80%; height: 100px;
             border: 3px solid #3b82f6;
             box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5);
             z-index: 10;
         }
-
-        #shutter-flash { display: none; position: absolute; inset: 0; background: white; z-index: 60; }
-
-        /* 判定中/結果表示オーバーレイ */
         #loading-overlay {
             display: none; position: absolute; inset: 0;
-            z-index: 200; align-items: center; justify-content: center; color: white; text-align: center;
-            background: rgba(0,0,0,0.8);
+            z-index: 200; align-items: center; justify-content: center; color: white;
+            background: rgba(0,0,0,0.85); flex-direction: column;
         }
         .msg-box { padding: 30px 60px; border-radius: 20px; font-weight: 900; font-size: 48px; border: 4px solid white; }
     </style>
@@ -38,26 +33,26 @@
     </div>
 
     <div id="video-container">
-        <div id="shutter-flash"></div>
         <video id="video" autoplay playsinline></video>
-        
-        <!-- 解析中・結果表示用 -->
         <div id="loading-overlay">
             <div id="loading-content">
                 <div class="animate-spin h-12 w-12 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-                <p class="text-xl font-bold">AI解析中...</p>
+                <p>Google AIが解析中...</p>
             </div>
-            <div id="result-content" style="display:none;">
-                <div id="msg-card" class="msg-box"></div>
-                <p class="mt-4 text-sm text-gray-300">タップで次へ</p>
+            <div id="result-content" style="display:none;" class="text-center">
+                <div id="msg-card" class="msg-box mb-4"></div>
+                <p>画面をタップして次へ</p>
             </div>
         </div>
-
         <div class="scan-guide"></div>
         <canvas id="capture-canvas" style="display:none;"></canvas>
     </div>
 
-    <div class="p-6 bg-white flex flex-col items-center shadow-inner">
+    <div class="p-4 bg-white flex flex-col items-center">
+        <!-- 解析した画像を確認できるプレビュー（デバッグ用） -->
+        <p class="text-[8px] text-gray-400">Last Capture Preview</p>
+        <img id="debug-preview" class="h-12 border mb-2 opacity-50">
+
         <div class="flex justify-around w-full mb-4">
             <div class="text-left">
                 <p class="text-[10px] text-gray-400 font-bold uppercase">正解 ID</p>
@@ -69,12 +64,11 @@
             </div>
         </div>
 
-        <!-- 大きなスキャンボタン -->
-        <button id="shutter-btn" onclick="performScan()" class="w-full py-5 bg-blue-600 text-white rounded-2xl text-2xl font-bold shadow-xl active:bg-blue-800 active:scale-95 transition-all">
+        <button id="shutter-btn" onclick="performScan()" class="w-full py-5 bg-blue-600 text-white rounded-2xl text-2xl font-bold shadow-xl active:bg-blue-800 transition-all">
             スキャン実行
         </button>
         
-        <button onclick="resetApp()" class="mt-4 text-gray-400 text-xs underline">正解IDをリセット</button>
+        <button onclick="resetApp()" class="mt-4 text-gray-400 text-xs underline">リセット</button>
     </div>
 
     <script>
@@ -89,8 +83,8 @@
         const loadingContent = document.getElementById('loading-content');
         const resultContent = document.getElementById('result-content');
         const msgCard = document.getElementById('msg-card');
-        const flash = document.getElementById('shutter-flash');
         const shutterBtn = document.getElementById('shutter-btn');
+        const debugPreview = document.getElementById('debug-preview');
 
         let targetID = null;
 
@@ -101,40 +95,29 @@
                 });
                 video.srcObject = stream;
             } catch (err) {
-                alert("カメラを起動できませんでした。");
+                alert("カメラを起動できません");
             }
         }
 
-        // 解析実行
         async function performScan() {
-            if (!GAS_URL.startsWith("https")) {
-                alert("GASのURLを設定してください");
-                return;
-            }
+            if (!GAS_URL.startsWith("https")) { alert("GASのURLを設定してください"); return; }
 
-            // UIの切り替え
             shutterBtn.disabled = true;
             overlay.style.display = 'flex';
             loadingContent.style.display = 'block';
             resultContent.style.display = 'none';
 
-            // フラッシュ演出
-            flash.style.display = 'block';
-            setTimeout(() => { flash.style.display = 'none'; }, 100);
-
             const ctx = canvas.getContext('2d');
-            const vW = video.videoWidth;
-            const vH = video.videoHeight;
+            
+            // 切り抜きせず、画像全体を適度なサイズ（横800px）にして送る
+            const scale = 800 / video.videoWidth;
+            canvas.width = 800;
+            canvas.height = video.videoHeight * scale;
+            
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-            // クロップ（青い枠の部分だけ抜き出し）
-            const cropW = vW * 0.8;
-            const cropH = vH * 0.2;
-            const cropX = (vW - cropW) / 2;
-            const cropY = (vH - cropH) / 2;
-
-            canvas.width = cropW;
-            canvas.height = cropH;
-            ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+            // デバッグ用に撮影された画像を画面に表示
+            debugPreview.src = canvas.toDataURL('image/jpeg');
 
             const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
 
@@ -147,40 +130,29 @@
 
                 if (data.scannedID && data.scannedID !== "検出不可") {
                     handleResult(data.scannedID, data.status);
-                    showResultOverlay(data.status);
+                    showResult(data.status);
                 } else {
-                    alert("10桁の数字が見つかりませんでした。");
+                    alert("数字が見つかりませんでした。もっと大きく写してください。");
                     closeOverlay();
                 }
             } catch (err) {
-                alert("通信エラーが発生しました。");
+                alert("通信エラー");
                 closeOverlay();
             }
         }
 
-        function showResultOverlay(status) {
+        function showResult(status) {
             loadingContent.style.display = 'none';
             resultContent.style.display = 'block';
-            
-            if (status === "初回登録") {
-                msgCard.innerText = "登録完了";
-                msgCard.className = "msg-box bg-blue-600";
-            } else if (status === "一致") {
-                msgCard.innerText = "OK";
-                msgCard.className = "msg-box bg-green-600";
-            } else {
-                msgCard.innerText = "NG";
-                msgCard.className = "msg-box bg-red-600";
-            }
-
-            // 画面全体をタップして次に進むようにする
+            if (status === "初回登録") { msgCard.innerText = "登録完了"; msgCard.className = "msg-box bg-blue-600"; }
+            else if (status === "一致") { msgCard.innerText = "OK"; msgCard.className = "msg-box bg-green-600"; }
+            else { msgCard.innerText = "NG"; msgCard.className = "msg-box bg-red-600"; }
             overlay.onclick = closeOverlay;
         }
 
         function closeOverlay() {
             overlay.style.display = 'none';
             shutterBtn.disabled = false;
-            overlay.onclick = null;
         }
 
         function handleResult(id, status) {
