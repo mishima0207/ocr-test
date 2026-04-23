@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>全自動ID照合（サイレント）</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body, html { position: fixed; width: 100%; height: 100%; margin: 0; display: flex; flex-direction: column; background-color: #000; overflow: hidden; }
+        #status-bar { z-index: 100; flex-shrink: 0; }
+        #video-container { position: relative; flex-grow: 1; width: 100%; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        .scan-guide {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 85%; height: 100px;
+            border: 3px dashed #3b82f6;
+            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5);
+            z-index: 10;
+        }
+        .controls { z-index: 100; background-color: white; padding: 1rem; flex-shrink: 0; text-align: center; }
+        
+        /* 判定結果・待機用オーバーレイ */
+        #wait-overlay {
+            display: none; position: absolute; inset: 0;
+            z-index: 50; align-items: center; justify-content: center; color: white; text-align: center;
+        }
+        .msg-box { padding: 30px 60px; border-radius: 20px; font-weight: 900; font-size: 48px; border: 4px solid white; }
+    </style>
+</head>
+<body>
+
+    <div id="status-bar" class="p-4 text-center text-xl font-black bg-gray-800 text-white transition-all">
+        1枚目をスキャン（正解登録）
+    </div>
+
+    <div id="video-container">
+        <video id="video" autoplay playsinline></video>
+        
+        <!-- 結果表示オーバーレイ -->
+        <div id="wait-overlay">
+            <div id="msg-card" class="msg-box"></div>
+        </div>
+
+        <div class="scan-guide"></div>
+        <canvas id="capture-canvas" style="display:none;"></canvas>
+    </div>
+
+    <div class="controls">
+        <div class="flex justify-around mb-2">
+            <div class="text-left">
+                <p class="text-[10px] text-gray-400 font-bold uppercase">正解 ID</p>
+                <p id="target-id" class="text-2xl font-mono text-blue-600">----------</p>
+            </div>
+            <div class="text-left border-l pl-4">
+                <p class="text-[10px] text-gray-400 font-bold uppercase">今回検知</p>
+                <p id="current-id" class="text-2xl font-mono text-gray-800">----------</p>
+            </div>
+        </div>
+        <button onclick="resetApp()" class="mt-2 text-gray-500 text-sm font-bold border border-gray-300 px-4 py-1 rounded-full">正解IDをリセット</button>
+    </div>
+
+    <script>
+        const GAS_URL = "https://script.google.com/macros/s/AKfycbxQCTxmn41UR3GhNLi7xqYmR6cNX-X1KaNNrcuhHX98wvrvkfe_Rn36yvv4r82cHgjz/exec";
+
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('capture-canvas');
+        const statusBar = document.getElementById('status-bar');
+        const targetDisplay = document.getElementById('target-id');
+        const currentDisplay = document.getElementById('current-id');
+        const waitOverlay = document.getElementById('wait-overlay');
+        const msgCard = document.getElementById('msg-card');
+
+        let targetID = null;
+        let isWaiting = false;
+
+        async function initCamera() {
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: { facingMode: "environment", width: { ideal: 1280 } }
+            });
+            video.srcObject = stream;
+            setTimeout(autoScanLoop, 3000);
+        }
+
+        async function autoScanLoop() {
+            if (!isWaiting) {
+                await performScan();
+            }
+            setTimeout(autoScanLoop, 1500);
+        }
+
+        async function performScan() {
+            const ctx = canvas.getContext('2d');
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0);
+
+            const base64Image = canvas.toDataURL('image/jpeg', 0.7).split(',')[1];
+
+            try {
+                const response = await fetch(GAS_URL, {
+                    method: 'POST',
+                    body: JSON.stringify({ image: base64Image, targetID: targetID || "" })
+                });
+                const data = await response.json();
+
+                if (data.scannedID && data.scannedID !== "検出不可") {
+                    handleResult(data.scannedID, data.status);
+                    await triggerWait(data.status);
+                }
+            } catch (err) {
+                console.error("通信エラー:", err);
+            }
+        }
+
+        async function triggerWait(status) {
+            isWaiting = true;
+            
+            if (status === "初回登録") {
+                msgCard.innerText = "登録完了";
+                waitOverlay.style.backgroundColor = "rgba(37, 99, 235, 0.9)"; // 青
+            } else if (status === "一致") {
+                msgCard.innerText = "OK";
+                waitOverlay.style.backgroundColor = "rgba(22, 163, 74, 0.9)"; // 緑
+            } else {
+                msgCard.innerText = "NG";
+                waitOverlay.style.backgroundColor = "rgba(220, 38, 38, 0.9)"; // 赤
+            }
+
+            waitOverlay.style.display = 'flex';
+            // 入れ替え待ち時間（3秒）
+            await new Promise(r => setTimeout(r, 3000));
+            waitOverlay.style.display = 'none';
+            isWaiting = false;
+        }
+
+        function handleResult(id, status) {
+            currentDisplay.innerText = id;
+
+            if (!targetID) {
+                targetID = id;
+                targetDisplay.innerText = id;
+                statusBar.innerText = "登録完了: " + id;
+                statusBar.className = "p-4 text-center text-xl font-black bg-blue-600 text-white";
+            } else {
+                if (status === "一致") {
+                    statusBar.innerText = "一致 (OK)";
+                    statusBar.className = "p-4 text-center text-xl font-black bg-green-600 text-white";
+                } else {
+                    statusBar.innerText = "不一致 (NG)";
+                    statusBar.className = "p-4 text-center text-xl font-black bg-red-600 text-white";
+                }
+            }
+        }
+
+        function resetApp() {
+            targetID = null;
+            targetDisplay.innerText = "----------";
+            currentDisplay.innerText = "----------";
+            statusBar.innerText = "1枚目をスキャン（正解登録）";
+            statusBar.className = "p-4 text-center text-xl font-black bg-gray-800 text-white";
+        }
+
+        window.onload = initCamera;
+    </script>
+</body>
+</html>
