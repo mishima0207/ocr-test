@@ -3,29 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ID照合（座標完全修正版）</title>
+    <title>ID照合（プレビュー修正版）</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body, html { position: fixed; width: 100%; height: 100%; margin: 0; display: flex; flex-direction: column; background-color: #111; overflow: hidden; }
-        
-        /* ビデオコンテナ：データの比率を保ったまま中央に配置 */
-        #video-container { 
-            position: relative; 
-            width: 100%; 
-            height: 50vh; /* 画面の上半分をカメラに固定 */
-            background: #000; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center;
-        }
-
-        video { 
-            width: 100%; 
-            height: 100%; 
-            object-fit: contain; /* 映像を歪めたり隠したりせず、全体を表示 */
-        }
-        
-        /* 青い枠（映像の中央に配置） */
+        #video-container { position: relative; width: 100%; height: 45vh; background: #000; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: contain; }
         .scan-guide {
             position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%);
@@ -33,14 +16,17 @@
             border: 3px solid #3b82f6;
             z-index: 10;
             background: rgba(59, 130, 246, 0.1);
+            pointer-events: none;
         }
-
         #loading-overlay {
             display: none; position: absolute; inset: 0;
             z-index: 200; align-items: center; justify-content: center; color: white;
             background: rgba(0,0,0,0.85); flex-direction: column;
         }
         .msg-box { padding: 30px 60px; border-radius: 20px; font-weight: 900; font-size: 48px; border: 4px solid white; }
+        /* プレビューエリアを明示的に確保 */
+        #debug-container { width: 90%; height: 80px; background: #333; display: flex; align-items: center; justify-content: center; border: 2px solid #555; overflow: hidden; }
+        #debug-preview { max-width: 100%; max-height: 100%; display: block; }
     </style>
 </head>
 <body class="bg-gray-100">
@@ -54,7 +40,7 @@
         <div id="loading-overlay">
             <div id="loading-content">
                 <div class="animate-spin h-12 w-12 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-                <p>枠内を正確に解析中...</p>
+                <p>解析中...</p>
             </div>
             <div id="result-content" style="display:none;" class="text-center">
                 <div id="msg-card" class="msg-box mb-4"></div>
@@ -65,27 +51,28 @@
         <canvas id="capture-canvas" style="display:none;"></canvas>
     </div>
 
-    <div class="flex-grow p-4 bg-white flex flex-col items-center shadow-inner">
-        <!-- 検証用プレビュー -->
-        <p class="text-[10px] text-gray-400 font-bold mb-1">OCR送信画像（この中に数字があれば成功）</p>
-        <img id="debug-preview" class="w-full h-24 border-2 border-blue-500 object-contain bg-gray-200 mb-4">
+    <div class="flex-grow p-4 bg-white flex flex-col items-center">
+        <p class="text-[10px] text-gray-500 font-bold mb-1">OCR SENDING IMAGE</p>
+        <div id="debug-container">
+            <img id="debug-preview" src="" alt="PREVIEW">
+        </div>
 
-        <div class="grid grid-cols-2 gap-4 w-full mb-6">
+        <div class="grid grid-cols-2 gap-4 w-full my-4">
             <div class="bg-blue-50 p-2 rounded border-l-4 border-blue-500">
                 <p class="text-[10px] text-blue-600 font-bold">正解 ID</p>
-                <p id="target-id" class="text-xl font-mono text-gray-800">----------</p>
+                <p id="target-id" class="text-lg font-mono text-gray-800">----------</p>
             </div>
             <div class="bg-yellow-50 p-2 rounded border-l-4 border-yellow-500">
                 <p class="text-[10px] text-yellow-600 font-bold">今回検知</p>
-                <p id="current-id" class="text-xl font-mono text-gray-800">----------</p>
+                <p id="current-id" class="text-lg font-mono text-gray-800">----------</p>
             </div>
         </div>
 
-        <button id="shutter-btn" onclick="performScan()" class="w-full py-5 bg-blue-600 text-white rounded-2xl text-2xl font-bold shadow-xl active:bg-blue-800 transition-all">
+        <button id="shutter-btn" onclick="performScan()" class="w-full py-5 bg-blue-600 text-white rounded-2xl text-2xl font-bold shadow-xl active:bg-blue-800">
             スキャン実行
         </button>
         
-        <button onclick="resetApp()" class="mt-4 text-gray-400 text-xs underline">リセット</button>
+        <button onclick="resetApp()" class="mt-2 text-gray-400 text-xs underline">リセット</button>
     </div>
 
     <script>
@@ -118,38 +105,35 @@
             if (!GAS_URL.startsWith("https")) { alert("GASのURLを設定してください"); return; }
 
             shutterBtn.disabled = true;
-            overlay.style.display = 'flex';
-            loadingContent.style.display = 'block';
-            resultContent.style.display = 'none';
 
             const ctx = canvas.getContext('2d');
-            
-            // ビデオの実際のデータサイズ
             const vW = video.videoWidth;
             const vH = video.videoHeight;
-
-            // ビデオが表示されている画面上のサイズ（object-fit: containを考慮）
             const dW = video.offsetWidth;
             const dH = video.offsetHeight;
 
-            // 枠のデータ上のサイズを計算
-            // 枠は画面(dW)の80%幅、80px高。これをデータ比率に変換。
+            // 比率に基づいた正確なクロップ
             const cropW = vW * 0.8; 
             const cropH = (80 / dH) * vH; 
-            
             const cropX = (vW - cropW) / 2;
             const cropY = (vH - cropH) / 2;
 
             canvas.width = cropW;
             canvas.height = cropH;
             
-            // 描画
+            // Canvasに描画
             ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
 
-            // プレビュー表示
-            debugPreview.src = canvas.toDataURL('image/jpeg');
+            // 【プレビュー表示の確実化】
+            const imageData = canvas.toDataURL('image/jpeg', 0.8);
+            debugPreview.src = imageData; // ここで画像URLをセット
 
-            const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+            // オーバーレイ表示
+            overlay.style.display = 'flex';
+            loadingContent.style.display = 'block';
+            resultContent.style.display = 'none';
+
+            const base64Image = imageData.split(',')[1];
 
             try {
                 const response = await fetch(GAS_URL, {
@@ -204,6 +188,7 @@
             currentDisplay.innerText = "----------";
             statusBar.innerText = "1枚目をスキャン";
             statusBar.className = "p-4 text-center text-xl font-black bg-gray-800 text-white";
+            debugPreview.src = ""; // プレビューもリセット
             closeOverlay();
         }
 
