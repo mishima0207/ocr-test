@@ -3,19 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ID照合（確実ボタン式）</title>
+    <title>ID照合（枠内限定スキャン）</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         body, html { position: fixed; width: 100%; height: 100%; margin: 0; display: flex; flex-direction: column; background-color: #000; overflow: hidden; }
-        #status-bar { z-index: 100; }
-        #video-container { position: relative; flex-grow: 1; width: 100%; overflow: hidden; }
+        #status-bar { z-index: 100; flex-shrink: 0; }
+        #video-container { position: relative; flex-grow: 1; width: 100%; overflow: hidden; background: #000; }
         video { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* 青い枠（この中だけを切り取ります） */
         .scan-guide {
             position: absolute; top: 50%; left: 50%;
             transform: translate(-50%, -50%);
-            width: 80%; height: 100px;
+            width: 80%; height: 120px;
             border: 3px solid #3b82f6;
-            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.5);
+            box-shadow: 0 0 0 4000px rgba(0, 0, 0, 0.6);
             z-index: 10;
         }
         #loading-overlay {
@@ -37,21 +39,21 @@
         <div id="loading-overlay">
             <div id="loading-content">
                 <div class="animate-spin h-12 w-12 border-4 border-blue-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-                <p>Google AIが解析中...</p>
+                <p>枠内のIDを解析中...</p>
             </div>
             <div id="result-content" style="display:none;" class="text-center">
                 <div id="msg-card" class="msg-box mb-4"></div>
                 <p>画面をタップして次へ</p>
             </div>
         </div>
-        <div class="scan-guide"></div>
+        <div class="scan-guide" id="guide-box"></div>
         <canvas id="capture-canvas" style="display:none;"></canvas>
     </div>
 
     <div class="p-4 bg-white flex flex-col items-center">
-        <!-- 解析した画像を確認できるプレビュー（デバッグ用） -->
-        <p class="text-[8px] text-gray-400">Last Capture Preview</p>
-        <img id="debug-preview" class="h-12 border mb-2 opacity-50">
+        <!-- 切り取られた画像を確認するためのデバッグ用 -->
+        <p class="text-[8px] text-gray-400 font-bold uppercase mb-1">OCR送信画像（枠内のみ）</p>
+        <img id="debug-preview" class="h-16 border-2 border-blue-200 mb-2">
 
         <div class="flex justify-around w-full mb-4">
             <div class="text-left">
@@ -64,7 +66,7 @@
             </div>
         </div>
 
-        <button id="shutter-btn" onclick="performScan()" class="w-full py-5 bg-blue-600 text-white rounded-2xl text-2xl font-bold shadow-xl active:bg-blue-800 transition-all">
+        <button id="shutter-btn" onclick="performScan()" class="w-full py-5 bg-blue-600 text-white rounded-2xl text-2xl font-bold shadow-xl active:bg-blue-800">
             スキャン実行
         </button>
         
@@ -109,14 +111,34 @@
 
             const ctx = canvas.getContext('2d');
             
-            // 切り抜きせず、画像全体を適度なサイズ（横800px）にして送る
-            const scale = 800 / video.videoWidth;
-            canvas.width = 800;
-            canvas.height = video.videoHeight * scale;
-            
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            // 映像の実際の解像度
+            const vW = video.videoWidth;
+            const vH = video.videoHeight;
+            // 画面上の表示サイズ
+            const dW = video.clientWidth;
+            const dH = video.clientHeight;
 
-            // デバッグ用に撮影された画像を画面に表示
+            // 画面上の枠のサイズ（80%幅、120px高）
+            const guideW = dW * 0.8;
+            const guideH = 120;
+
+            // 画面上のサイズから、カメラ映像の解像度上の座標へ変換する比率
+            const scaleX = vW / dW;
+            const scaleY = vH / dH;
+
+            // カメラ映像上の切り取り範囲を計算
+            const cropW = guideW * scaleX;
+            const cropH = guideH * scaleY;
+            const cropX = (vW - cropW) / 2;
+            const cropY = (vH - cropH) / 2;
+
+            canvas.width = cropW;
+            canvas.height = cropH;
+            
+            // 枠内だけを正確に切り取って描画
+            ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+            // デバッグ表示用のプレビュー（ここが正しく切り取られていればOK）
             debugPreview.src = canvas.toDataURL('image/jpeg');
 
             const base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
@@ -132,7 +154,7 @@
                     handleResult(data.scannedID, data.status);
                     showResult(data.status);
                 } else {
-                    alert("数字が見つかりませんでした。もっと大きく写してください。");
+                    alert("枠内に数字が見つかりませんでした。枠に数字が重なるように調整してください。");
                     closeOverlay();
                 }
             } catch (err) {
